@@ -151,10 +151,13 @@ public class YYByteBufferCodec implements YYMediaCodecInterface {
                 }
 
                 if(bufferIndex >= 0){
-                    mInputBuffers[bufferIndex].clear();
-                    mInputBuffers[bufferIndex].put(packet.buffer);
-                    //将 ByteBuffer 的状态从写模式切换到读模式
-                    mInputBuffers[bufferIndex].flip();
+                    ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(bufferIndex);
+                    if (inputBuffer != null) {
+                        inputBuffer.clear();
+                        inputBuffer.put(packet.buffer);
+                        //将 ByteBuffer 的状态从写模式切换到读模式
+                        inputBuffer.flip();
+                    }
                     try {
                         mMediaCodec.queueInputBuffer(bufferIndex, 0, packet.bufferInfo.size, packet.bufferInfo.presentationTimeUs, packet.bufferInfo.flags);
                     } catch (Exception e) {
@@ -192,7 +195,7 @@ public class YYByteBufferCodec implements YYMediaCodecInterface {
                         mListener.dataOnAvailable(bufferFrame);
                     }
                     ///<  true 用于控制是否将输出缓冲区的内容渲染到关联的 Surface 上
-                    mMediaCodec.releaseOutputBuffer(bufferIndex,true);
+                    mMediaCodec.releaseOutputBuffer(bufferIndex,false);
                 }else{
                     ///< MediaCodec 的输出格式发生了改变
                     if (bufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -284,7 +287,7 @@ public class YYByteBufferCodec implements YYMediaCodecInterface {
 
         try {
             mMediaCodec.start();
-            mInputBuffers = mMediaCodec.getInputBuffers();
+//            mInputBuffers = mMediaCodec.getInputBuffers();
         }catch (Exception e) {
             Log.e(TAG, "start" +  e );
             _callBackError(YYByteBufferCodecErrorStart,e.getMessage());

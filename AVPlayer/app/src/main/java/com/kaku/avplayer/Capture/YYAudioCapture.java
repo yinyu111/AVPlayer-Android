@@ -87,6 +87,8 @@ public class YYAudioCapture {
                         int readSize = mAudioRecord.read(pcmData, 0, mMinBufferSize);
                         if (readSize > 0) {
                             //处理音频数据 data
+                            //输出 pcmData 数组的长度和 readSize 的大小
+                            if (pcmData.length > readSize) readSize = pcmData.length;
                             ByteBuffer buffer = ByteBuffer.allocateDirect(readSize).put(pcmData).order(ByteOrder.nativeOrder());
                             buffer.position(0);
                             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();

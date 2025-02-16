@@ -81,6 +81,14 @@ public class MainActivity extends AppCompatActivity {
         // 输出文件路径到 Logcat
         Log.wtf("FilePath", "PCM filePath: " + filePath);
 
+        if(mStream == null){
+            try {
+                mStream = new FileOutputStream(filePath);
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            }
+        }
+
         FrameLayout.LayoutParams startParams = new FrameLayout.LayoutParams(200, 120);
         startParams.gravity = Gravity.CENTER_HORIZONTAL;
         Button startButton = new Button(this);
@@ -96,24 +104,19 @@ public class MainActivity extends AppCompatActivity {
                     mAudioCapture = new YYAudioCapture(mAudioCaptureConfig, mAudioCaptureListener);
                     mAudioCapture.startRunning();
 
-                    if(mStream == null){
-                        try {
-                            mStream = new FileOutputStream(filePath);
-                        } catch (FileNotFoundException e) {
-                            e.printStackTrace();
-                        }
-                    }
-
                     mEncoder = new YYAudioByteBufferEncoder();
                     MediaFormat mediaFormat = YYAVTools.createAudioFormat(mAudioCaptureConfig.sampleRate,mAudioCaptureConfig.channel,96*1000);
                     mEncoder.setup(true,mediaFormat,mAudioEncoderListener,null);
                     ((Button)view).setText("停止");
                 }else{
-                    mAudioCapture.stopRunning();
+                    // 等待编码完成
 
-                    mEncoder.release();
-                    mEncoder = null;
-                    ((Button)view).setText("开始");
+                        mAudioCapture.stopRunning();
+                        mEncoder.flush();
+                        mEncoder.release();
+                        mEncoder = null;
+                        ((Button)view).setText("开始");
+
                 }
             }
         });
@@ -136,12 +139,15 @@ public class MainActivity extends AppCompatActivity {
             }
 
             try {
-                mEncoder.processFrame(frame);
+                if (mEncoder != null) {
+                    mEncoder.processFrame(frame);
+                }
             } catch (Exception e) {
                 Log.e("YYAudioCapture", "Error process audio data: " + e.getMessage());
                 e.printStackTrace();
             }
         }
+
     };
 
     ///< 音频采集回调
@@ -170,7 +176,7 @@ public class MainActivity extends AppCompatActivity {
                 byte[] dst = new byte[bufferFrame.bufferInfo.size];
                 bufferFrame.buffer.get(dst);
                 mStream.write(dst);
-                mStream.flush(); // 确保数据被及时写入文件
+//                mStream.flush(); // 确保数据被及时写入文件
             }  catch (IOException e) {
                 Log.e("YYMediaCodec", "Error writing audio aac data: " + e.getMessage());
                 e.printStackTrace();
