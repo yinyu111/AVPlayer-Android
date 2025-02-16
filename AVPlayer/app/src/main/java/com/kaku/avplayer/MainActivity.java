@@ -1,6 +1,6 @@
 package com.kaku.avplayer;
 //
-//  YYAudioCapture
+//  MainActivity
 //  AVPlayer
 //
 //  Created by 尹玉 on 2025/2/8.
@@ -35,6 +35,7 @@ import android.widget.FrameLayout;
 import com.kaku.avplayer.Base.YYBufferFrame;
 import com.kaku.avplayer.Base.YYFrame;
 import com.kaku.avplayer.Base.YYAVTools;
+import com.kaku.avplayer.Base.YYMediaBase;
 import com.kaku.avplayer.Capture.YYAudioCapture;
 import com.kaku.avplayer.Capture.YYAudioCaptureConfig;
 import com.kaku.avplayer.Capture.YYAudioCaptureListener;
@@ -42,6 +43,9 @@ import com.kaku.avplayer.MediaCodec.YYAudioByteBufferEncoder;
 import com.kaku.avplayer.MediaCodec.YYByteBufferCodec;
 import com.kaku.avplayer.MediaCodec.YYMediaCodecInterface;
 import com.kaku.avplayer.MediaCodec.YYMediaCodecListener;
+import com.kaku.avplayer.Muxer.YYMP4Muxer;
+import com.kaku.avplayer.Muxer.YYMuxerConfig;
+import com.kaku.avplayer.Muxer.YYMuxerListener;
 
 
 import java.io.FileNotFoundException;
@@ -54,11 +58,12 @@ import static android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT;
 import static android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
 
 public class MainActivity extends AppCompatActivity {
-    private FileOutputStream mStream = null;
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
     private YYAudioCaptureConfig mAudioCaptureConfig = null;///< 音频采集配置
     private YYMediaCodecInterface mEncoder = null;///< 音频编码
     private MediaFormat mAudioEncoderFormat = null;///< 音频编码格式描述
+    private YYMP4Muxer mMuxer;///< 封装起器
+    private YYMuxerConfig mMuxerConfig; ///< 封装器配置
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
@@ -76,18 +81,13 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // 获取文件路径
-        String filePath = getExternalFilesDir(null).getPath() + "/test.aac";
+        String filePath = getExternalFilesDir(null).getPath() + "/test.m4a";
         // String filePath = Environment.getExternalStorageDirectory().getPath() + "/test.pcm";
         // 输出文件路径到 Logcat
-        Log.wtf("FilePath", "PCM filePath: " + filePath);
+        Log.wtf("FilePath", "M4A filePath: " + filePath);
 
-        if(mStream == null){
-            try {
-                mStream = new FileOutputStream(filePath);
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
-        }
+        mMuxerConfig = new YYMuxerConfig(filePath);
+        mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAudio;
 
         FrameLayout.LayoutParams startParams = new FrameLayout.LayoutParams(200, 120);
         startParams.gravity = Gravity.CENTER_HORIZONTAL;
@@ -107,16 +107,22 @@ public class MainActivity extends AppCompatActivity {
                     mEncoder = new YYAudioByteBufferEncoder();
                     MediaFormat mediaFormat = YYAVTools.createAudioFormat(mAudioCaptureConfig.sampleRate,mAudioCaptureConfig.channel,96*1000);
                     mEncoder.setup(true,mediaFormat,mAudioEncoderListener,null);
+
+                    mMuxer = new YYMP4Muxer(mMuxerConfig,mMuxerListener);
                     ((Button)view).setText("停止");
                 }else{
                     // 等待编码完成
+                    mAudioCapture.stopRunning();
 
-                        mAudioCapture.stopRunning();
-                        mEncoder.flush();
-                        mEncoder.release();
-                        mEncoder = null;
-                        ((Button)view).setText("开始");
+                    mEncoder.flush();
+                    mEncoder.release();
+                    mEncoder = null;
 
+                    mMuxer.stop();
+                    mMuxer.release();
+                    mMuxer = null;
+
+                    ((Button)view).setText("开始");
                 }
             }
         });
@@ -159,28 +165,24 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void dataOnAvailable(YYFrame frame) {
-            ///< 音频回调数据
+            ///< 编码回调写入封装器
             if(mAudioEncoderFormat == null && mEncoder != null){
                 mAudioEncoderFormat = mEncoder.getOutputMediaFormat();
+                mMuxer.setAudioMediaFormat(mEncoder.getOutputMediaFormat());
+                mMuxer.start();
             }
-            YYBufferFrame bufferFrame = (YYBufferFrame)frame;
-            try {
-                ByteBuffer adtsBuffer = YYAVTools.getADTS(bufferFrame.bufferInfo.size,
-                        mAudioEncoderFormat.getInteger(MediaFormat.KEY_PROFILE),
-                        mAudioEncoderFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE),
-                        mAudioEncoderFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
-                byte[] adtsBytes = new byte[adtsBuffer.capacity()];
-                adtsBuffer.get(adtsBytes);
-                mStream.write(adtsBytes);
 
-                byte[] dst = new byte[bufferFrame.bufferInfo.size];
-                bufferFrame.buffer.get(dst);
-                mStream.write(dst);
-//                mStream.flush(); // 确保数据被及时写入文件
-            }  catch (IOException e) {
-                Log.e("YYMediaCodec", "Error writing audio aac data: " + e.getMessage());
-                e.printStackTrace();
+            if(mMuxer != null){
+                mMuxer.writeSampleData(false,((YYBufferFrame)frame).buffer,((YYBufferFrame)frame).bufferInfo);
             }
+        }
+    };
+
+    private YYMuxerListener mMuxerListener = new YYMuxerListener() {
+        @Override
+        public void muxerOnError(int error, String errorMsg) {
+            ///< 音频封装错误回调
+            Log.i("YYMuxerListener","error" + error + "msg" + errorMsg);
         }
     };
 }
