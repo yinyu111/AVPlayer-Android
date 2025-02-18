@@ -31,6 +31,9 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.content.Context;
+import android.widget.LinearLayout;
+
 
 import com.kaku.avplayer.Base.YYBufferFrame;
 import com.kaku.avplayer.Base.YYFrame;
@@ -46,11 +49,15 @@ import com.kaku.avplayer.MediaCodec.YYMediaCodecListener;
 import com.kaku.avplayer.Muxer.YYMP4Muxer;
 import com.kaku.avplayer.Muxer.YYMuxerConfig;
 import com.kaku.avplayer.Muxer.YYMuxerListener;
+import com.kaku.avplayer.Demuxer.YYMP4Demuxer;
+import com.kaku.avplayer.Demuxer.YYDemuxerConfig;
+import com.kaku.avplayer.Demuxer.YYDemuxerListener;
 
 
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.File;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
 
@@ -64,6 +71,9 @@ public class MainActivity extends AppCompatActivity {
     private MediaFormat mAudioEncoderFormat = null;///< 音频编码格式描述
     private YYMP4Muxer mMuxer;///< 封装起器
     private YYMuxerConfig mMuxerConfig; ///< 封装器配置
+    private YYMP4Demuxer mDemuxer; ///< 解封装实例
+    private YYDemuxerConfig mDemuxerConfig; ///< 解封装配置
+    private FileOutputStream mStream = null;
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
@@ -81,54 +91,138 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // 获取文件路径
-        String filePath = getExternalFilesDir(null).getPath() + "/test.m4a";
-        // String filePath = Environment.getExternalStorageDirectory().getPath() + "/test.pcm";
-        // 输出文件路径到 Logcat
-        Log.wtf("FilePath", "M4A filePath: " + filePath);
+        String outputCapture = getExternalFilesDir(null).getPath() + "/test.m4a";
+        Log.e("outputCapture", "M4A outputCapture: " + outputCapture);
+        String inputFilePath = getExternalFilesDir(null).getPath() + "/input.mp4";
+        Log.e("inputFilePath", "MP4 inputFilePath: " + inputFilePath);
+        File file = new File(inputFilePath);
+        if (!file.exists()) {
+            Log.e("kaku", "文件不存在");
+            return;
+        }
+        String outputDemuxer = getExternalFilesDir(null).getPath() + "/output.aac";
+        Log.e("outputDemuxer", "aac outputDemuxer: " + outputDemuxer);
 
-        mMuxerConfig = new YYMuxerConfig(filePath);
+        mMuxerConfig = new YYMuxerConfig(outputCapture);
         mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAudio;
 
-        FrameLayout.LayoutParams startParams = new FrameLayout.LayoutParams(200, 120);
-        startParams.gravity = Gravity.CENTER_HORIZONTAL;
-        Button startButton = new Button(this);
-        startButton.setTextColor(Color.BLUE);
-        startButton.setText("开始");
-        startButton.setVisibility(View.VISIBLE);
-        ///> 设置了一个点击事件监听器
-        startButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                if(mEncoder == null){
-                    mAudioCaptureConfig = new YYAudioCaptureConfig();
-                    mAudioCapture = new YYAudioCapture(mAudioCaptureConfig, mAudioCaptureListener);
-                    mAudioCapture.startRunning();
-
-                    mEncoder = new YYAudioByteBufferEncoder();
-                    MediaFormat mediaFormat = YYAVTools.createAudioFormat(mAudioCaptureConfig.sampleRate,mAudioCaptureConfig.channel,96*1000);
-                    mEncoder.setup(true,mediaFormat,mAudioEncoderListener,null);
-
-                    mMuxer = new YYMP4Muxer(mMuxerConfig,mMuxerListener);
-                    ((Button)view).setText("停止");
-                }else{
-                    // 等待编码完成
-                    mAudioCapture.stopRunning();
-
-                    mEncoder.flush();
-                    mEncoder.release();
-                    mEncoder = null;
-
-                    mMuxer.stop();
-                    mMuxer.release();
-                    mMuxer = null;
-
-                    ((Button)view).setText("开始");
-                }
+        mDemuxerConfig = new YYDemuxerConfig();
+        mDemuxerConfig.path = inputFilePath;
+        mDemuxerConfig.demuxerType = YYMediaBase.YYMediaType.YYMediaAudio;
+        if(mStream == null){
+            try {
+                mStream = new FileOutputStream(outputDemuxer);
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
             }
-        });
-        ///> 按钮添加到当前的布局中
-        addContentView(startButton, startParams);
+        }
+
+        // 创建一个垂直的 LinearLayout
+        LinearLayout linearLayout = new LinearLayout(this);
+        linearLayout.setOrientation(LinearLayout.VERTICAL);
+        linearLayout.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        // 创建开始/停止按钮
+        Button startButton = createButton("Capture", this::onStartStopButtonClick, Gravity.CENTER_HORIZONTAL);
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        startButton.setLayoutParams(startParams);
+        linearLayout.addView(startButton);
+
+        // 创建新按钮
+        Button demuxerButton = createButton("Demuxer", this::onDemuxerButtonClick, Gravity.CENTER_HORIZONTAL);
+        demuxerButton.setLayoutParams(startParams);
+        linearLayout.addView(demuxerButton);
+
+        // 创建新按钮
+        Button decoderButton = createButton("Decoder", this::onDecoderButtonClick, Gravity.CENTER_HORIZONTAL);
+        decoderButton.setLayoutParams(startParams);
+        linearLayout.addView(decoderButton);
+
+        // 将 LinearLayout 添加到内容视图
+        FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        );
+        addContentView(linearLayout, layoutParams);
+
     }
+
+    // 修改 createButton 方法的返回类型为 Button
+    private Button createButton(String text, View.OnClickListener listener, int gravity) {
+        Context context = this;
+        Button button = new Button(context);
+        button.setTextColor(Color.BLUE);
+        button.setText(text);
+        button.setVisibility(View.VISIBLE);
+        button.setOnClickListener(listener);
+        return button; // 返回创建好的 Button 对象
+    }
+
+
+    private void onStartStopButtonClick(View view) {
+        // 处理开始/停止按钮的点击事件
+        if (mEncoder == null) {
+            mAudioCaptureConfig = new YYAudioCaptureConfig();
+            mAudioCapture = new YYAudioCapture(mAudioCaptureConfig, mAudioCaptureListener);
+            mAudioCapture.startRunning();
+
+            mEncoder = new YYAudioByteBufferEncoder();
+            MediaFormat mediaFormat = YYAVTools.createAudioFormat(mAudioCaptureConfig.sampleRate, mAudioCaptureConfig.channel, 96 * 1000);
+            mEncoder.setup(true, mediaFormat, mAudioEncoderListener, null);
+
+            mMuxer = new YYMP4Muxer(mMuxerConfig, mMuxerListener);
+            ((Button) view).setText("stop");
+        } else {
+            // 等待编码完成
+            mAudioCapture.stopRunning();
+
+            mEncoder.flush();
+            mEncoder.release();
+            mEncoder = null;
+
+            mMuxer.stop();
+            mMuxer.release();
+            mMuxer = null;
+
+            ((Button) view).setText("Capture");
+        }
+    }
+
+    private void onDemuxerButtonClick(View view) {
+        ///< 创建解封装实例
+        if(mDemuxer == null) {
+            mDemuxer = new YYMP4Demuxer(mDemuxerConfig, mDemuxerListener);
+
+            ///< 读取音频数据
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            ByteBuffer nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+            while (nextBuffer != null) {
+                try {
+                    ///< 添加 ADTS
+                    ByteBuffer adtsBuffer = YYAVTools.getADTS(bufferInfo.size, mDemuxer.audioProfile(), mDemuxer.samplerate(), mDemuxer.channel());
+                    byte[] adtsBytes = new byte[adtsBuffer.capacity()];
+                    adtsBuffer.get(adtsBytes);
+                    mStream.write(adtsBytes);
+
+                    byte[] dst = new byte[bufferInfo.size];
+                    nextBuffer.get(dst);
+                    mStream.write(dst);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+            }
+            Log.i("YYDemuxer", "complete");
+        }
+    }
+
+    private void onDecoderButtonClick(View view) {
+
+    }
+
 
     ///< 音频采集回调
     private YYAudioCaptureListener mAudioCaptureListener = new YYAudioCaptureListener() {
@@ -183,6 +277,14 @@ public class MainActivity extends AppCompatActivity {
         public void muxerOnError(int error, String errorMsg) {
             ///< 音频封装错误回调
             Log.i("YYMuxerListener","error" + error + "msg" + errorMsg);
+        }
+    };
+
+    private YYDemuxerListener mDemuxerListener = new YYDemuxerListener() {
+        ///< 解封装错误回调
+        @Override
+        public void demuxerOnError(int error, String errorMsg) {
+            Log.i("KFDemuxer","error" + error + "msg" + errorMsg);
         }
     };
 }
