@@ -192,7 +192,11 @@ public class YYByteBufferCodec implements YYMediaCodecInterface {
                     ByteBuffer decodeBuffer = mMediaCodec.getOutputBuffer(bufferIndex);
                     if(mListener != null){
                         YYBufferFrame bufferFrame = new YYBufferFrame(decodeBuffer,outputBufferInfo);
-                        mListener.dataOnAvailable(bufferFrame);
+                        if (mIsEncoder) {
+                            mListener.encodeDataOnAvailable(bufferFrame);
+                        } else {
+                            mListener.decodeDataOnAvailable(bufferFrame);
+                        }
                     }
                     ///<  true 用于控制是否将输出缓冲区的内容渲染到关联的 Surface 上
                     mMediaCodec.releaseOutputBuffer(bufferIndex,false);

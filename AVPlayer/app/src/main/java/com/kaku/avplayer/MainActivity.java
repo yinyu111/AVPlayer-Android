@@ -71,8 +71,10 @@ public class MainActivity extends AppCompatActivity {
     private MediaFormat mAudioEncoderFormat = null;///< 音频编码格式描述
     private YYMP4Muxer mMuxer;///< 封装起器
     private YYMuxerConfig mMuxerConfig; ///< 封装器配置
+
     private YYMP4Demuxer mDemuxer; ///< 解封装实例
     private YYDemuxerConfig mDemuxerConfig; ///< 解封装配置
+    private YYMediaCodecInterface mDecoder; ///< 音频解码
     private FileOutputStream mStream = null;
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
@@ -102,6 +104,8 @@ public class MainActivity extends AppCompatActivity {
         }
         String outputDemuxer = getExternalFilesDir(null).getPath() + "/output.aac";
         Log.e("outputDemuxer", "aac outputDemuxer: " + outputDemuxer);
+        String outputDecoder = getExternalFilesDir(null).getPath() + "/output.pcm";
+        Log.e("outputDecoder", "aac outputDecoder: " + outputDecoder);
 
         mMuxerConfig = new YYMuxerConfig(outputCapture);
         mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAudio;
@@ -111,11 +115,13 @@ public class MainActivity extends AppCompatActivity {
         mDemuxerConfig.demuxerType = YYMediaBase.YYMediaType.YYMediaAudio;
         if(mStream == null){
             try {
-                mStream = new FileOutputStream(outputDemuxer);
+                mStream = new FileOutputStream(outputDecoder);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             }
         }
+
+
 
         // 创建一个垂直的 LinearLayout
         LinearLayout linearLayout = new LinearLayout(this);
@@ -220,9 +226,29 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onDecoderButtonClick(View view) {
+        ///< 创建解封装器与解码器。
+        if (mDemuxer == null) {
+            mDemuxer = new YYMP4Demuxer(mDemuxerConfig,mDemuxerListener);
+            mDecoder = new YYByteBufferCodec();
+            mDecoder.setup(false,mDemuxer.audioMediaFormat(),mAudioEncoderListener,null);
 
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            ByteBuffer nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+            ///< 循环读取音频帧进入解码器。
+            while (nextBuffer != null) {
+                mDecoder.processFrame(new YYBufferFrame(nextBuffer,bufferInfo));
+                nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+            }
+            mDecoder.flush();
+            Log.i("YYDemuxer","complete");
+        }
     }
 
+
+
+
+
+    ///====================================Listern====================================
 
     ///< 音频采集回调
     private YYAudioCaptureListener mAudioCaptureListener = new YYAudioCaptureListener() {
@@ -258,7 +284,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
-        public void dataOnAvailable(YYFrame frame) {
+        public void encodeDataOnAvailable(YYFrame frame) {
             ///< 编码回调写入封装器
             if(mAudioEncoderFormat == null && mEncoder != null){
                 mAudioEncoderFormat = mEncoder.getOutputMediaFormat();
@@ -268,6 +294,19 @@ public class MainActivity extends AppCompatActivity {
 
             if(mMuxer != null){
                 mMuxer.writeSampleData(false,((YYBufferFrame)frame).buffer,((YYBufferFrame)frame).bufferInfo);
+            }
+        }
+
+        @Override
+        public void decodeDataOnAvailable(YYFrame frame) {
+            Log.i("YYMediaCodec","decodeDataOnAvailable");
+            YYBufferFrame bufferFrame = (YYBufferFrame)frame;
+            try {
+                byte[] dst = new byte[bufferFrame.bufferInfo.size];
+                bufferFrame.buffer.get(dst);
+                mStream.write(dst);
+            }  catch (IOException e) {
+                e.printStackTrace();
             }
         }
     };

@@ -18,5 +18,6 @@ public interface YYMediaCodecListener {
 
     void onError(int error, String errorMsg);
 
-    void dataOnAvailable(YYFrame frame);
+    void encodeDataOnAvailable(YYFrame frame);
+    void decodeDataOnAvailable(YYFrame frame);
 }
