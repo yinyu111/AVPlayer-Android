@@ -52,6 +52,8 @@ import com.kaku.avplayer.Muxer.YYMuxerListener;
 import com.kaku.avplayer.Demuxer.YYMP4Demuxer;
 import com.kaku.avplayer.Demuxer.YYDemuxerConfig;
 import com.kaku.avplayer.Demuxer.YYDemuxerListener;
+import com.kaku.avplayer.Render.YYAudioRender;
+import com.kaku.avplayer.Render.YYAudioRenderListener;
 
 
 import java.io.FileNotFoundException;
@@ -60,6 +62,7 @@ import java.io.IOException;
 import java.io.File;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT;
 import static android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
@@ -76,6 +79,11 @@ public class MainActivity extends AppCompatActivity {
     private YYDemuxerConfig mDemuxerConfig; ///< 解封装配置
     private YYMediaCodecInterface mDecoder; ///< 音频解码
     private FileOutputStream mStream = null;
+
+    private YYAudioRender mRender;///< 音频渲染实例
+    private byte[] mPCMCache = new byte[10*1024*1024];///< PCM数据缓存
+    private int mPCMCacheSize = 0;
+    private ReentrantLock mLock = new ReentrantLock(true);
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
@@ -146,6 +154,11 @@ public class MainActivity extends AppCompatActivity {
         Button decoderButton = createButton("Decoder", this::onDecoderButtonClick, Gravity.CENTER_HORIZONTAL);
         decoderButton.setLayoutParams(startParams);
         linearLayout.addView(decoderButton);
+
+        // 创建新按钮
+        Button renderButton = createButton("Render", this::onRenderButtonClick, Gravity.CENTER_HORIZONTAL);
+        renderButton.setLayoutParams(startParams);
+        linearLayout.addView(renderButton);
 
         // 将 LinearLayout 添加到内容视图
         FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
@@ -244,6 +257,25 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void onRenderButtonClick(View view) {
+        ///< 创建音频解封装实例
+        mDemuxer = new YYMP4Demuxer(mDemuxerConfig,mDemuxerListener);
+        mDecoder = new YYByteBufferCodec();
+        mDecoder.setup(false,mDemuxer.audioMediaFormat(),mAudioEncoderListener,null);
+
+        ///< 循环获取解封装数据塞入解码器
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        ByteBuffer nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+        while (nextBuffer != null){
+            mDecoder.processFrame(new YYBufferFrame(nextBuffer,bufferInfo));
+            nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
+        }
+
+        ///< 创建音频渲染实例
+        mRender = new YYAudioRender(mRenderListener,mDemuxer.samplerate(),mDemuxer.channel());
+        mRender.play();
+    }
+
 
 
 
@@ -301,12 +333,13 @@ public class MainActivity extends AppCompatActivity {
         public void decodeDataOnAvailable(YYFrame frame) {
             Log.i("YYMediaCodec","decodeDataOnAvailable");
             YYBufferFrame bufferFrame = (YYBufferFrame)frame;
-            try {
-                byte[] dst = new byte[bufferFrame.bufferInfo.size];
-                bufferFrame.buffer.get(dst);
-                mStream.write(dst);
-            }  catch (IOException e) {
-                e.printStackTrace();
+            if(bufferFrame.buffer != null && bufferFrame.bufferInfo.size > 0){
+                byte[] bytes = new byte[bufferFrame.bufferInfo.size];
+                bufferFrame.buffer.get(bytes);
+                mLock.lock();
+                System.arraycopy(bytes,0,mPCMCache,mPCMCacheSize,bytes.length);
+                mPCMCacheSize += bytes.length;
+                mLock.unlock();
             }
         }
     };
@@ -324,6 +357,30 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void demuxerOnError(int error, String errorMsg) {
             Log.i("KFDemuxer","error" + error + "msg" + errorMsg);
+        }
+    };
+
+    private YYAudioRenderListener mRenderListener = new YYAudioRenderListener() {
+        @Override
+        ///< 音频渲染出错
+        public void onError(int error, String errorMsg) {
+
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        @Override
+        ///< 音频播放模块获取音频 PCM 数据
+        public byte[] audioPCMData(int size) {
+            if(mPCMCacheSize >= size){
+                byte[] dst = new byte[size];
+                mLock.lock();
+                System.arraycopy(mPCMCache,0,dst,0,size);
+                mPCMCacheSize -= size;
+                System.arraycopy(mPCMCache,size,mPCMCache,0,mPCMCacheSize);
+                mLock.unlock();
+                return dst;
+            }
+            return null;
         }
     };
 }
