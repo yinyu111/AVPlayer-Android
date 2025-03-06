@@ -57,8 +57,8 @@ public class YYGLContext {
         _eglSetup();
     }
 
-    public YYGLContext(EGLContext shareContext, Surface surface) {
-        mEGLContext = shareContext;
+    public YYGLContext(EGLContext shareContext,Surface surface) {
+        mEGLShareContext = shareContext;
         mSurface = surface;
         // 创建GL上下文
         _eglSetup();
