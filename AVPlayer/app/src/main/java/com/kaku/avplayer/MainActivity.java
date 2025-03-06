@@ -34,6 +34,18 @@ import android.widget.FrameLayout;
 import android.content.Context;
 import android.widget.LinearLayout;
 
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.File;
+import java.nio.Buffer;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.util.concurrent.locks.ReentrantLock;
+
+import static android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT;
+import static android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
 
 import com.kaku.avplayer.Base.YYBufferFrame;
 import com.kaku.avplayer.Base.YYFrame;
@@ -55,17 +67,17 @@ import com.kaku.avplayer.Demuxer.YYDemuxerListener;
 import com.kaku.avplayer.Render.YYAudioRender;
 import com.kaku.avplayer.Render.YYAudioRenderListener;
 
+import com.kaku.avplayer.Base.YYGLBase;
+import com.kaku.avplayer.Base.YYTextureFrame;
+import com.kaku.avplayer.Capture.YYIVideoCapture;
+import com.kaku.avplayer.Capture.YYVideoCaptureConfig;
+import com.kaku.avplayer.Capture.YYVideoCaptureListener;
+import com.kaku.avplayer.Capture.YYVideoCaptureV1;
+import com.kaku.avplayer.Capture.YYVideoCaptureV2;
+import com.kaku.avplayer.Effect.YYGLContext;
+import com.kaku.avplayer.Effect.YYGLFilter;
+import com.kaku.avplayer.Render.YYRenderView;
 
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.File;
-import java.nio.Buffer;
-import java.nio.ByteBuffer;
-import java.util.concurrent.locks.ReentrantLock;
-
-import static android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT;
-import static android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
 
 public class MainActivity extends AppCompatActivity {
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
@@ -84,6 +96,11 @@ public class MainActivity extends AppCompatActivity {
     private byte[] mPCMCache = new byte[10*1024*1024];///< PCM数据缓存
     private int mPCMCacheSize = 0;
     private ReentrantLock mLock = new ReentrantLock(true);
+
+    private YYIVideoCapture mCapture;///< 相机采集
+    private YYVideoCaptureConfig mCaptureConfig;///< 相机采集配置
+    private YYRenderView mRenderView;///< 渲染视图
+    private YYGLContext mGLContext;///< OpenGL 上下文
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
@@ -156,9 +173,14 @@ public class MainActivity extends AppCompatActivity {
         linearLayout.addView(decoderButton);
 
         // 创建新按钮
-        Button renderButton = createButton("Render", this::onRenderButtonClick, Gravity.CENTER_HORIZONTAL);
-        renderButton.setLayoutParams(startParams);
-        linearLayout.addView(renderButton);
+        Button audioRenderButton = createButton("AudioRender", this::onAudioRenderButtonClick, Gravity.CENTER_HORIZONTAL);
+        audioRenderButton.setLayoutParams(startParams);
+        linearLayout.addView(audioRenderButton);
+
+        // 创建新按钮
+        Button videoRenderButton = createButton("VideoRender", this::onVideoRenderButtonClick, Gravity.CENTER_HORIZONTAL);
+        videoRenderButton.setLayoutParams(startParams);
+        linearLayout.addView(videoRenderButton);
 
         // 将 LinearLayout 添加到内容视图
         FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
@@ -257,7 +279,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void onRenderButtonClick(View view) {
+    private void onAudioRenderButtonClick(View view) {
         ///< 创建音频解封装实例
         mDemuxer = new YYMP4Demuxer(mDemuxerConfig,mDemuxerListener);
         mDecoder = new YYByteBufferCodec();
@@ -274,6 +296,32 @@ public class MainActivity extends AppCompatActivity {
         ///< 创建音频渲染实例
         mRender = new YYAudioRender(mRenderListener,mDemuxer.samplerate(),mDemuxer.channel());
         mRender.play();
+    }
+
+    private void onVideoRenderButtonClick(View view) {
+        ///< OpenGL上下文
+        mGLContext = new YYGLContext(null);
+        ///< 渲染视图
+        mRenderView = new YYRenderView(this,mGLContext.getContext());
+        WindowManager windowManager = (WindowManager)this.getSystemService(this.WINDOW_SERVICE);
+        Rect outRect = new Rect();
+        windowManager.getDefaultDisplay().getRectSize(outRect);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(outRect.width(), outRect.height());
+        addContentView(mRenderView,params);
+
+        ///< 采集配置 摄像头方向、分辨率、帧率
+        mCaptureConfig = new YYVideoCaptureConfig();
+        mCaptureConfig.cameraFacing = LENS_FACING_FRONT;
+        mCaptureConfig.resolution = new Size(720,1280);
+        mCaptureConfig.fps = 30;
+        boolean useCamera2 = true;
+        if(useCamera2){
+            mCapture = new YYVideoCaptureV2();
+        }else{
+            mCapture = new YYVideoCaptureV1();
+        }
+        mCapture.setup(this,mCaptureConfig,mVideoCaptureListener,mGLContext.getContext());
+        mCapture.startRunning();
     }
 
 
@@ -356,7 +404,7 @@ public class MainActivity extends AppCompatActivity {
         ///< 解封装错误回调
         @Override
         public void demuxerOnError(int error, String errorMsg) {
-            Log.i("KFDemuxer","error" + error + "msg" + errorMsg);
+            Log.i("YYDemuxer","error" + error + "msg" + errorMsg);
         }
     };
 
@@ -381,6 +429,30 @@ public class MainActivity extends AppCompatActivity {
                 return dst;
             }
             return null;
+        }
+    };
+
+    private YYVideoCaptureListener mVideoCaptureListener = new YYVideoCaptureListener() {
+        @Override
+        ///< 相机打开回调
+        public void cameraOnOpened(){}
+
+        @Override
+        ///< 相机关闭回调
+        public void cameraOnClosed() {
+        }
+
+        @Override
+        ///< 相机出错回调
+        public void cameraOnError(int error,String errorMsg) {
+
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        @Override
+        ///< 相机数据回调
+        public void onFrameAvailable(YYFrame frame) {
+            mRenderView.render((YYTextureFrame) frame);
         }
     };
 }

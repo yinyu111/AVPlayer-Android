@@ -16,6 +16,7 @@ import java.nio.ByteBuffer;
 
 import static com.kaku.avplayer.Base.YYFrame.YYFrameType.YYFrameBuffer;
 
+//extends !!!
 public class YYBufferFrame extends YYFrame {
     public ByteBuffer buffer;
     public MediaCodec.BufferInfo bufferInfo;
