@@ -9,11 +9,13 @@ package com.kaku.avplayer.MediaCodec;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.opengl.EGLContext;
+import android.opengl.GLES20;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Surface;
 
 import androidx.annotation.RequiresApi;
 
@@ -29,171 +31,171 @@ import com.kaku.avplayer.Base.YYTextureFrame;
 import com.kaku.avplayer.Effect.YYGLContext;
 import com.kaku.avplayer.Effect.YYGLFilter;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+
+@RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR1)
 public class YYVideoSurfaceEncoder implements YYMediaCodecInterface {
-    public static final int YYByteBufferCodecErrorParams = -2500;
-    public static final int YYByteBufferCodecErrorCreate = -2501;
-    public static final int YYByteBufferCodecErrorConfigure = -2502;
-    public static final int YYByteBufferCodecErrorStart = -2503;
+    private static final String TAG = "YYVideoSurfaceEncoder";
+    private YYMediaCodecListener mListener = null;// 回调
+    private YYGLContext mEGLContext = null;//GL 上下文
+    private YYGLFilter mFilter = null;// 渲染到Surface 特效
+    private MediaCodec mEncoder = null;// 编码器
+    private Surface mSurface = null;// 渲染Surface缓存
 
-    private static final int YYByteBufferCodecInputBufferMaxCache = 20 * 1024 * 1024;
-    private static final String TAG = "YYByteBufferCodec";
-    private YYMediaCodecListener mListener = null;///< 回调
-    private MediaCodec mMediaCodec = null;///< Codec实例
-    private ByteBuffer[] mInputBuffers;///<  Codec输入缓冲区
-    private MediaFormat mInputMediaFormat = null;///< 输入数据格式描述
-    private MediaFormat mOutMediaFormat = null;///< 输出数据格式描述
+    private HandlerThread mEncoderThread = null;//编码线程
+    private Handler mEncoderHandler = null;
+    private Handler mMainHandler = new Handler(Looper.getMainLooper());// 主线程
+    private MediaCodec.BufferInfo mBufferInfo = new MediaCodec.BufferInfo();
+    private long mLastInputPts = 0;
+    private MediaFormat mOutputFormat = null;// 输出格式描述
+    private MediaFormat mInputFormat = null;// 输入格式描述
 
-    private long mLastInputPts = 0;///< 上一帧时间戳
-    private List<YYBufferFrame> mList = new ArrayList<>();///< 输入数据缓存
-    private int mListCacheSize = 0;///< 输入数据缓存数量
-    private ReentrantLock mListLock = new ReentrantLock(true);///< 数据缓存锁
-    private boolean mIsEncoder = true;
+    public YYVideoSurfaceEncoder() {
 
-    private HandlerThread mCodecThread = null;///<  Codec线程
-    private Handler mCodecHandler = null;
-    private Handler mMainHandler = new Handler(Looper.getMainLooper());///< 主线程
-
-    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN)
-    @Override
-    public void setup(boolean isEncoder,MediaFormat mediaFormat, YYMediaCodecListener listener, EGLContext eglShareContext) {
-        mListener = listener;
-        mInputMediaFormat = mediaFormat;
-        mIsEncoder = isEncoder;
-
-        mCodecThread = new HandlerThread("YYByteBufferCodecThread");
-        mCodecThread.start();
-        mCodecHandler = new Handler((mCodecThread.getLooper()));
-
-        mCodecHandler.post(()->{
-            if(mInputMediaFormat == null){
-                _callBackError(YYByteBufferCodecErrorParams,"mInputMediaFormat null");
-                return;
-            }
-            ///< 初始化 Codec 实例
-            _setupCodec();
-        });
     }
 
-    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN)
-    public void  release() {
-        ///< 释放 Codec 实例、输入缓存
-        mCodecHandler.post(()-> {
-            if(mMediaCodec != null){
-                try {
-                    mMediaCodec.stop();
-                    mMediaCodec.release();
-                } catch (Exception e) {
-                    Log.e(TAG, "release: " + e.toString());
-                }
-                mMediaCodec = null;
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    @Override
+    public void setup(boolean isEncoder,MediaFormat mediaFormat, YYMediaCodecListener listener, EGLContext eglShareContext) {
+        mInputFormat = mediaFormat;
+        mListener = listener;
+
+        mEncoderThread = new HandlerThread("YYSurfaceEncoderThread");
+        mEncoderThread.start();
+        mEncoderHandler = new Handler((mEncoderThread.getLooper()));
+
+        mEncoderHandler.post(()->{
+            if(mInputFormat == null){
+                _callBackError(YYMediaCodecInterfaceErrorParams,"mInputFormat == null");
+                return;
             }
 
-            mListLock.lock();
-            mList.clear();
-            mListCacheSize = 0;
-            mListLock.unlock();
-
-            mCodecThread.quit();
+            // 初始化编码器
+            boolean setupSuccess = _setupEnocder();
+            if(setupSuccess){
+                mEGLContext = new YYGLContext(eglShareContext,mSurface);
+                mEGLContext.bind();
+                // 初始化特效 用于纹理渲染到编码器Surface上
+                _setupFilter();
+                mEGLContext.unbind();
+            }
         });
     }
 
     @Override
     public MediaFormat getOutputMediaFormat() {
-        return mOutMediaFormat;
+        return mOutputFormat;
     }
 
     @Override
     public MediaFormat getInputMediaFormat() {
-        return mInputMediaFormat;
+        return mInputFormat;
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    @Override
+    public void release() {
+        mEncoderHandler.post(()->{
+            // 释放编码器
+            if(mEncoder != null){
+                try {
+                    mEncoder.stop();
+                    mEncoder.release();
+                } catch (Exception e) {
+                    Log.e(TAG, "release: " + e.toString());
+                }
+                mEncoder = null;
+            }
+
+            // 释放GL特效 上下文
+            if(mEGLContext != null){
+                mEGLContext.bind();
+                if(mFilter != null){
+                    mFilter.release();
+                    mFilter = null;
+                }
+                mEGLContext.unbind();
+
+                mEGLContext.release();
+                mEGLContext = null;
+            }
+
+            // 释放Surface缓存
+            if(mSurface != null){
+                mSurface.release();
+                mSurface = null;
+            }
+
+            mEncoderThread.quit();
+        });
     }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
     public int processFrame(YYFrame inputFrame) {
-        ///< 处理输入帧数据
-        if(inputFrame == null){
+        if(inputFrame == null || mEncoderHandler == null){
             return YYMediaCodecProcessParams;
         }
+        YYTextureFrame frame = (YYTextureFrame)inputFrame;
 
-        YYBufferFrame frame = (YYBufferFrame)inputFrame;
-        if(frame.buffer ==null || frame.bufferInfo == null || frame.bufferInfo.size == 0){
-            return YYMediaCodecProcessParams;
-        }
-
-        ///< 先添加到缓冲区，一旦缓冲区满则返回 YYMediaCodecProcessAgainLater
-        boolean appendSuccess = _appendFrame(frame);
-        if(!appendSuccess){
-            return YYMediaCodecProcessAgainLater;
-        }
-
-        mCodecHandler.post(()-> {
-            if(mMediaCodec == null){
-                return;
-            }
-
-            ///< 子线程处理编解码，从队列取出一组数据，能塞多少塞多少数据
-            mListLock.lock();
-            int mListSize = mList.size();
-            mListLock.unlock();
-            while (mListSize > 0){
-                mListLock.lock();
-                YYBufferFrame packet = mList.get(0);
-                mListLock.unlock();
-
-                int bufferIndex;
-                try {
-                    bufferIndex = mMediaCodec.dequeueInputBuffer(10 * 1000);
-                } catch (Exception e) {
-                    Log.e(TAG, "dequeueInputBuffer" + e);
-                    return;
-                }
-
-                if(bufferIndex >= 0){
-                    mInputBuffers[bufferIndex].clear();
-                    mInputBuffers[bufferIndex].put(packet.buffer);
-                    mInputBuffers[bufferIndex].flip();
-                    try {
-                        mMediaCodec.queueInputBuffer(bufferIndex, 0, packet.bufferInfo.size, packet.bufferInfo.presentationTimeUs, packet.bufferInfo.flags);
-                    } catch (Exception e) {
-                        Log.e(TAG, "queueInputBuffer" + e);
-                        return;
-                    }
-
-                    mLastInputPts = packet.bufferInfo.presentationTimeUs;
-                    mListLock.lock();
-                    mList.remove(0);
-                    mListSize = mList.size();
-                    mListCacheSize -= packet.bufferInfo.size;
-                    mListLock.unlock();
+        mEncoderHandler.post(()-> {
+            if(mEncoder != null && mEGLContext != null){
+                if(frame.isEnd){
+                    // 最后一帧标记
+                    mEncoder.signalEndOfInputStream();
                 }else{
-                    break;
-                }
-            }
+                    // 最近一帧时间戳
+                    mLastInputPts = frame.usTime();
+                    mEGLContext.bind();
+                    // 渲染纹理到编码器Surface 设置视口
+                    GLES20.glViewport(0, 0, frame.textureSize.getWidth(), frame.textureSize.getHeight());
+                    mFilter.render(frame);
+                    // 设置时间戳
+                    mEGLContext.setPresentationTime(frame.usTime() * 1000);
+                    mEGLContext.swapBuffers();
+                    mEGLContext.unbind();
 
-            ///< 获取Codec后的数据，一样策略，尽量拿出最多的数据出来，回调给外层
-            long outputDts = -1;
-            MediaCodec.BufferInfo outputBufferInfo = new MediaCodec.BufferInfo();
-            while (outputDts < mLastInputPts) {
-                int bufferIndex;
-                try {
-                    bufferIndex = mMediaCodec.dequeueOutputBuffer(outputBufferInfo, 10 * 1000);
-                } catch (Exception e) {
-                    Log.e(TAG, "dequeueOutputBuffer" + e);
-                    return;
-                }
+                    ///< 获取编码后的数据，尽量拿出最多的数据出来，回调给外层
+                    long outputDts = -1;
+                    while (outputDts < mLastInputPts){
+                        int bufferIndex = 0;
+                        try {
+                            //输出缓冲区队列中获取已经处理好的数据缓冲区
+                            bufferIndex = mEncoder.dequeueOutputBuffer(mBufferInfo, 10 * 1000);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Unexpected MediaCodec exception in dequeueOutputBufferIndex, " + e);
+                            _callBackError(YYMediaCodecInterfaceErrorDequeueOutputBuffer,e.getMessage());
+                            return;
+                        }
 
-                if(bufferIndex >= 0){
-                    ByteBuffer decodeBuffer = mMediaCodec.getOutputBuffer(bufferIndex);
-                    if(mListener != null){
-                        YYBufferFrame bufferFrame = new YYBufferFrame(decodeBuffer,outputBufferInfo);
-                        mListener.encodeDataOnAvailable(bufferFrame);
+                        if(bufferIndex >= 0){
+                            ByteBuffer byteBuffer = mEncoder.getOutputBuffer(bufferIndex);
+                            if(byteBuffer != null){
+                                outputDts = mBufferInfo.presentationTimeUs;
+                                if(mListener != null){
+                                    YYBufferFrame encodeFrame = new YYBufferFrame();
+                                    encodeFrame.buffer = byteBuffer;
+                                    encodeFrame.bufferInfo = mBufferInfo;
+                                    mListener.encodeDataOnAvailable(encodeFrame);
+                                }
+                            }else{
+                                break;
+                            }
+
+                            try {
+                                mEncoder.releaseOutputBuffer(bufferIndex, false);
+                            } catch (Exception e) {
+                                Log.e(TAG, e.toString());
+                                return;
+                            }
+                        }else{
+                            if(bufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){
+                                mOutputFormat = mEncoder.getOutputFormat();
+                            }
+                            break;
+                        }
                     }
-                    mMediaCodec.releaseOutputBuffer(bufferIndex,true);
-                }else{
-                    if (bufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        mOutMediaFormat = mMediaCodec.getOutputFormat();
-                    }
-                    break;
                 }
             }
         });
@@ -201,94 +203,58 @@ public class YYVideoSurfaceEncoder implements YYMediaCodecInterface {
         return YYMediaCodecProcessSuccess;
     }
 
-    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN)
+    @Override
     public void flush() {
-        ///< Codec 清空缓冲区，一般用于Seek、结束时时使用
-        mCodecHandler.post(()-> {
-            if(mMediaCodec == null){
-                return;
+        mEncoderHandler.post(()-> {
+            // 刷新缓冲区
+            if(mEncoder != null){
+                try {
+                    mEncoder.flush();
+                } catch (Exception e) {
+                    Log.e(TAG, "flush error!" + e);
+                }
             }
-
-            try {
-                mMediaCodec.flush();
-            } catch (Exception e) {
-                Log.e(TAG, "flush" + e);
-            }
-
-            mListLock.lock();
-            mList.clear();
-            mListCacheSize = 0;
-            mListLock.unlock();
         });
     }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-    private boolean _appendFrame(YYBufferFrame frame) {
-        ///< 将输入数据添加至缓冲区
-        mListLock.lock();
-        int cacheSize = mListCacheSize;
-        mListLock.unlock();
-        if(cacheSize >= YYByteBufferCodecInputBufferMaxCache){
+    private boolean _setupEnocder() {
+        // 初始化编码器
+        try {
+            String mimeType = mInputFormat.getString(MediaFormat.KEY_MIME);
+            mEncoder = MediaCodec.createEncoderByType(mimeType);
+            mEncoder.configure(mInputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        } catch (IOException e) {
+            Log.e(TAG, "createEncoderByType" + e);
+            _callBackError(YYMediaCodecInterfaceErrorCreate,e.getMessage());
             return false;
         }
 
-        YYBufferFrame packet = new YYBufferFrame();
+        // 创建Surface
+        mSurface = mEncoder.createInputSurface();
 
-        ByteBuffer newBuffer = ByteBuffer.allocateDirect(frame.bufferInfo.size);
-        newBuffer.put(frame.buffer).position(0);
-        MediaCodec.BufferInfo newInfo = new MediaCodec.BufferInfo();
-        newInfo.size = frame.bufferInfo.size;
-        newInfo.flags = frame.bufferInfo.flags;
-        newInfo.presentationTimeUs = frame.bufferInfo.presentationTimeUs;
-        packet.buffer = newBuffer;
-        packet.bufferInfo = newInfo;
-
-        mListLock.lock();
-        mList.add(packet);
-        mListCacheSize += packet.bufferInfo.size;
-        mListLock.unlock();
+        // 开启编码器
+        try {
+            mEncoder.start();
+        }catch (Exception e) {
+            Log.e(TAG, "start" +  e );
+            _callBackError(YYMediaCodecInterfaceErrorStart,e.getMessage());
+            return false;
+        }
 
         return true;
     }
 
-    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN)
-    private boolean _setupCodec() {
-        ///< 初始化Codec 模块，支持编码、解码，根据不同MediaFormat 创建不同Codec
-        try {
-            String mimetype = mInputMediaFormat.getString(MediaFormat.KEY_MIME);
-            if(mIsEncoder){
-                mMediaCodec = MediaCodec.createEncoderByType(mimetype);
-            }else{
-                mMediaCodec = MediaCodec.createDecoderByType(mimetype);
-            }
-
-        }catch (Exception e) {
-            Log.e(TAG, "createCodecByType" + e + mIsEncoder);
-            _callBackError(YYByteBufferCodecErrorCreate,e.getMessage());
-            return false;
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private void _setupFilter() {
+        // 创建渲染模块 渲染到编码器Surface
+        if(mFilter == null){
+            mFilter = new YYGLFilter(true, YYGLBase.defaultVertexShader,YYGLBase.defaultFragmentShader);
         }
-
-        try {
-            mMediaCodec.configure(mInputMediaFormat, null, null, mIsEncoder ? MediaCodec.CONFIGURE_FLAG_ENCODE : 0);
-        }catch (Exception e) {
-            Log.e(TAG, "configure" + e);
-            _callBackError(YYByteBufferCodecErrorConfigure,e.getMessage());
-            return false;
-        }
-
-        try {
-            mMediaCodec.start();
-            mInputBuffers = mMediaCodec.getInputBuffers();
-        }catch (Exception e) {
-            Log.e(TAG, "start" +  e );
-            _callBackError(YYByteBufferCodecErrorStart,e.getMessage());
-            return false;
-        }
-
-        return true;
     }
 
     private void _callBackError(int error, String errorMsg){
+        // 出错回调
         if(mListener != null){
             mMainHandler.post(()->{
                 mListener.onError(error,TAG + errorMsg);

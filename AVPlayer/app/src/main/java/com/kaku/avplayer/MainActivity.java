@@ -17,6 +17,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.opengl.EGLContext;
 import android.os.Build;
@@ -81,31 +82,37 @@ import com.kaku.avplayer.Render.YYRenderView;
 
 public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 1;
-    private static final String OUTPUT_CAPTURE = "test.m4a";
     private static final String INPUT_FILE_PATH = "input.mp4";
+    private static final String OUTPUT_CAPTURE = "test.m4a";
     private static final String OUTPUT_DEMUXER = "output.aac";
     private static final String OUTPUT_DECODER = "output.pcm";
+
+    private static final String OUTPUT_SURFACE_ENCODER = "output.h264";
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
     private YYAudioCaptureConfig mAudioCaptureConfig = null;///< 音频采集配置
-    private YYMediaCodecInterface mEncoder = null;///< 音频编码
+    private YYMediaCodecInterface mAudioEncoder = null;///< 音频编码
     private MediaFormat mAudioEncoderFormat = null;///< 音频编码格式描述
     private YYMP4Muxer mMuxer;///< 封装起器
     private YYMuxerConfig mMuxerConfig; ///< 封装器配置
 
     private YYMP4Demuxer mDemuxer; ///< 解封装实例
     private YYDemuxerConfig mDemuxerConfig; ///< 解封装配置
-    private YYMediaCodecInterface mDecoder; ///< 音频解码
+    private YYMediaCodecInterface mAudioDecoder; ///< 音频解码
     private FileOutputStream mStream = null;
 
-    private YYAudioRender mRender;///< 音频渲染实例
+    private YYAudioRender mAudioRender;///< 音频渲染实例
     private byte[] mPCMCache = new byte[10*1024*1024];///< PCM数据缓存
     private int mPCMCacheSize = 0;
     private ReentrantLock mLock = new ReentrantLock(true);
 
-    private YYIVideoCapture mCapture;///< 相机采集
-    private YYVideoCaptureConfig mCaptureConfig;///< 相机采集配置
+    private YYIVideoCapture mVideoCapture;///< 相机采集
+    private YYVideoCaptureConfig mVideoCaptureConfig;///< 相机采集配置
     private YYRenderView mRenderView;///< 渲染视图
-    private YYGLContext mGLContext;///< OpenGL 上下文
+    private YYGLContext mEGLContext;///< OpenGL 上下文
+
+    private YYMediaCodecInterface mVideoEncoder = null;
+    private YYMediaCodecInterface mVideoDecoder = null;
+    
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -146,16 +153,18 @@ public class MainActivity extends AppCompatActivity {
         Log.e("outputDemuxer", "aac outputDemuxer: " + outputDemuxer);
         String outputDecoder = externalFilesDir + "/" + OUTPUT_DECODER;
         Log.e("outputDecoder", "aac outputDecoder: " + outputDecoder);
+        String outputVideoEncoder = externalFilesDir + "/" + OUTPUT_SURFACE_ENCODER;
+        Log.e("outputVideoEncoder", "h264 outputVideoEncoder: " + outputVideoEncoder);
 
         mMuxerConfig = new YYMuxerConfig(outputCapture);
         mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAudio;
 
         mDemuxerConfig = new YYDemuxerConfig();
         mDemuxerConfig.path = inputFilePath;
-        mDemuxerConfig.demuxerType = YYMediaBase.YYMediaType.YYMediaAudio;
+        mDemuxerConfig.demuxerType = YYMediaBase.YYMediaType.YYMediaAV;
         if (mStream == null) {
             try {
-                mStream = new FileOutputStream(outputDecoder);
+                mStream = new FileOutputStream(outputVideoEncoder);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             }
@@ -197,6 +206,11 @@ public class MainActivity extends AppCompatActivity {
         videoRenderButton.setLayoutParams(startParams);
         linearLayout.addView(videoRenderButton);
 
+        // 创建新按钮
+        Button videoSurfaceEncoderButton = createButton("VideoSurfaceEncoder", this::onVideoSurfaceEncoderButtonClick, Gravity.CENTER_HORIZONTAL);
+        videoSurfaceEncoderButton.setLayoutParams(startParams);
+        linearLayout.addView(videoSurfaceEncoderButton);
+
         // 将 LinearLayout 添加到内容视图
         FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -217,7 +231,7 @@ public class MainActivity extends AppCompatActivity {
 
 
     private void onStartStopButtonClick(View view) {
-        if (mEncoder == null) {
+        if (mAudioEncoder == null) {
             initAudioCapture();
             initAudioEncoder();
             initMuxer();
@@ -237,9 +251,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initAudioEncoder() {
-        mEncoder = new YYAudioByteBufferEncoder();
+        mAudioEncoder = new YYAudioByteBufferEncoder();
         MediaFormat mediaFormat = YYAVTools.createAudioFormat(mAudioCaptureConfig.sampleRate, mAudioCaptureConfig.channel, 96 * 1000);
-        mEncoder.setup(true, mediaFormat, mAudioEncoderListener, null);
+        mAudioEncoder.setup(true, mediaFormat, mAudioEncoderListener, null);
     }
 
     private void initMuxer() {
@@ -254,10 +268,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void releaseAudioEncoder() {
-        if (mEncoder != null) {
-            mEncoder.flush();
-            mEncoder.release();
-            mEncoder = null;
+        if (mAudioEncoder != null) {
+            mAudioEncoder.flush();
+            mAudioEncoder.release();
+            mAudioEncoder = null;
         }
     }
 
@@ -310,18 +324,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initDecoder() {
-        mDecoder = new YYByteBufferCodec();
-        mDecoder.setup(false, mDemuxer.audioMediaFormat(), mAudioEncoderListener, null);
+        mAudioDecoder = new YYByteBufferCodec();
+        mAudioDecoder.setup(false, mDemuxer.audioMediaFormat(), mAudioEncoderListener, null);
     }
 
     private void processDecoder() {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         ByteBuffer nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
         while (nextBuffer != null) {
-            mDecoder.processFrame(new YYBufferFrame(nextBuffer, bufferInfo));
+            mAudioDecoder.processFrame(new YYBufferFrame(nextBuffer, bufferInfo));
             nextBuffer = mDemuxer.readAudioSampleData(bufferInfo);
         }
-        mDecoder.flush();
+        mAudioDecoder.flush();
         Log.i("YYDemuxer", "complete");
     }
 
@@ -334,8 +348,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initAudioRender() {
-        mRender = new YYAudioRender(mRenderListener, mDemuxer.samplerate(), mDemuxer.channel());
-        mRender.play();
+        mAudioRender = new YYAudioRender(mRenderListener, mDemuxer.samplerate(), mDemuxer.channel());
+        mAudioRender.play();
     }
 
     private void onVideoRenderButtonClick(View view) {
@@ -344,27 +358,53 @@ public class MainActivity extends AppCompatActivity {
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void initVideoRender() {
-        mGLContext = new YYGLContext(null);
-        mRenderView = new YYRenderView(this, mGLContext.getContext());
+        mEGLContext = new YYGLContext(null);
+        mRenderView = new YYRenderView(this, mEGLContext.getContext());
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         Rect outRect = new Rect();
         windowManager.getDefaultDisplay().getRectSize(outRect);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(outRect.width(), outRect.height());
         addContentView(mRenderView, params);
 
-        mCaptureConfig = new YYVideoCaptureConfig();
-        mCaptureConfig.cameraFacing = LENS_FACING_FRONT;
-        mCaptureConfig.resolution = new Size(720, 1280);
-        mCaptureConfig.fps = 30;
+        mVideoCaptureConfig = new YYVideoCaptureConfig();
+        mVideoCaptureConfig.cameraFacing = LENS_FACING_FRONT;
+        mVideoCaptureConfig.resolution = new Size(720, 1280);
+        mVideoCaptureConfig.fps = 30;
         boolean useCamera2 = true;
         if (useCamera2) {
-            mCapture = new YYVideoCaptureV2();
+            mVideoCapture = new YYVideoCaptureV2();
         } else {
-            mCapture = new YYVideoCaptureV1();
+            mVideoCapture = new YYVideoCaptureV1();
         }
-        mCapture.setup(this, mCaptureConfig, mVideoCaptureListener, mGLContext.getContext());
-        mCapture.startRunning();
+        mVideoCapture.setup(this, mVideoCaptureConfig, mVideoCaptureListener, mEGLContext.getContext());
+        mVideoCapture.startRunning();
     }
+
+    private void onVideoSurfaceEncoderButtonClick(View view) {
+        if(mDemuxer == null) {
+            initDemuxer();
+        }
+
+        if (mVideoDecoder == null) {
+            mVideoDecoder = new YYByteBufferCodec();
+            mVideoDecoder.setup(false,mDemuxer.videoMediaFormat(),mVideoEncoderListener,null);
+        }
+
+        if (mVideoEncoder == null) {
+            mVideoEncoder = new YYByteBufferCodec();
+            mVideoEncoder.setup(true, YYAVTools.createVideoFormat(false,new Size(mDemuxer.width(),mDemuxer.height()), MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,4*1024*1024,30,4,1,1),mVideoEncoderListener,null);
+        }
+
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        ByteBuffer nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
+        while (nextBuffer != null){
+            mVideoDecoder.processFrame(new YYBufferFrame(nextBuffer,bufferInfo));
+            nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
+        }
+        mVideoDecoder.flush();
+        Log.i("YYDemuxer","complete");
+    }
+
 
     @Override
     protected void onDestroy() {
@@ -373,7 +413,7 @@ public class MainActivity extends AppCompatActivity {
         releaseAudioEncoder();
         releaseMuxer();
         releaseDemuxer();
-        releaseDecoder();
+        releaseAudioDecoder();
         releaseAudioRender();
         releaseVideoCapture();
         try {
@@ -392,25 +432,25 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void releaseDecoder() {
-        if (mDecoder != null) {
-            mDecoder.release();
-            mDecoder = null;
+    private void releaseAudioDecoder() {
+        if (mAudioDecoder != null) {
+            mAudioDecoder.release();
+            mAudioDecoder = null;
         }
     }
 
     private void releaseAudioRender() {
-        if (mRender != null) {
-            mRender.stop();
-            mRender.release();
-            mRender = null;
+        if (mAudioRender != null) {
+            mAudioRender.stop();
+            mAudioRender.release();
+            mAudioRender = null;
         }
     }
 
     private void releaseVideoCapture() {
-        if (mCapture != null) {
-            mCapture.stopRunning();
-            mCapture = null;
+        if (mVideoCapture != null) {
+            mVideoCapture.stopRunning();
+            mVideoCapture = null;
         }
     }
 
@@ -434,8 +474,8 @@ public class MainActivity extends AppCompatActivity {
             }
 
             try {
-                if (mEncoder != null) {
-                    mEncoder.processFrame(frame);
+                if (mAudioEncoder != null) {
+                    mAudioEncoder.processFrame(frame);
                 }
             } catch (Exception e) {
                 Log.e("YYAudioCapture", "Error process audio data: " + e.getMessage());
@@ -455,9 +495,9 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void encodeDataOnAvailable(YYFrame frame) {
             ///< 编码回调写入封装器
-            if(mAudioEncoderFormat == null && mEncoder != null){
-                mAudioEncoderFormat = mEncoder.getOutputMediaFormat();
-                mMuxer.setAudioMediaFormat(mEncoder.getOutputMediaFormat());
+            if(mAudioEncoderFormat == null && mAudioEncoder != null){
+                mAudioEncoderFormat = mAudioEncoder.getOutputMediaFormat();
+                mMuxer.setAudioMediaFormat(mAudioEncoder.getOutputMediaFormat());
                 mMuxer.start();
             }
 
@@ -542,6 +582,40 @@ public class MainActivity extends AppCompatActivity {
         ///< 相机数据回调
         public void onFrameAvailable(YYFrame frame) {
             mRenderView.render((YYTextureFrame) frame);
+        }
+    };
+
+    private YYMediaCodecListener mVideoEncoderListener = new YYMediaCodecListener() {
+        @Override
+        public void onError(int error, String errorMsg) {
+
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        @Override
+        public void encodeDataOnAvailable(YYFrame frame) {
+            if(frame == null){
+                return;
+            }
+
+            YYBufferFrame bufferFrame = (YYBufferFrame)frame;
+            if(bufferFrame.buffer == null){
+                return;
+            }
+
+            try {
+                byte[] dst = new byte[(int) (bufferFrame.bufferInfo.size)];
+                bufferFrame.buffer.get(dst);
+                mStream.write(dst);
+            }  catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        @Override
+        public void decodeDataOnAvailable(YYFrame frame) {
+
         }
     };
 }

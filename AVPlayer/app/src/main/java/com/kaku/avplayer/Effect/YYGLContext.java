@@ -110,6 +110,14 @@ public class YYGLContext {
         }
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+    public void setPresentationTime(long nsecs) {
+        // 设置时间戳
+        if(mEGLDisplay != EGL_NO_DISPLAY && mEGLSurface != EGL_NO_SURFACE){
+            eglPresentationTimeANDROID(mEGLDisplay, mEGLSurface, nsecs);
+        }
+    }
+
     public void bind() {
         // 绑定当前上下文
         mLastSurface = eglGetCurrentSurface(EGL14.EGL_READ);

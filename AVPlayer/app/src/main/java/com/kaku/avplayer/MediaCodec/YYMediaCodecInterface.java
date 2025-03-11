@@ -12,7 +12,7 @@ import android.opengl.EGLContext;
 
 import com.kaku.avplayer.Base.YYFrame;
 public interface YYMediaCodecInterface {
-    public static final int YYMediaCOdecInterfaceErrorCreate = -2000;
+    public static final int YYMediaCodecInterfaceErrorCreate = -2000;
     public static final int YYMediaCodecInterfaceErrorConfigure = -2001;
     public static final int YYMediaCodecInterfaceErrorStart = -2003;
     public static final int YYMediaCodecInterfaceErrorDequeueOutputBuffer = -2003;
