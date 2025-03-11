@@ -59,6 +59,9 @@ import com.kaku.avplayer.MediaCodec.YYAudioByteBufferEncoder;
 import com.kaku.avplayer.MediaCodec.YYByteBufferCodec;
 import com.kaku.avplayer.MediaCodec.YYMediaCodecInterface;
 import com.kaku.avplayer.MediaCodec.YYMediaCodecListener;
+import com.kaku.avplayer.MediaCodec.YYVideoSurfaceDecoder;
+import com.kaku.avplayer.MediaCodec.YYVideoSurfaceEncoder;
+import com.kaku.avplayer.MediaCodec.YYVideoEncoderConfig;
 import com.kaku.avplayer.Muxer.YYMP4Muxer;
 import com.kaku.avplayer.Muxer.YYMuxerConfig;
 import com.kaku.avplayer.Muxer.YYMuxerListener;
@@ -110,13 +113,19 @@ public class MainActivity extends AppCompatActivity {
     private YYRenderView mRenderView;///< 渲染视图
     private YYGLContext mEGLContext;///< OpenGL 上下文
 
-    private YYMediaCodecInterface mVideoEncoder = null;
+
+    private YYVideoEncoderConfig mEncoderConfig;// 编码配置
+    private YYMediaCodecInterface mVideoEncoder;// 编码
     private YYMediaCodecInterface mVideoDecoder = null;
+
+    // 创建一个 FrameLayout 作为根布局
+    FrameLayout rootLayout;
+    LinearLayout linearLayout;
     
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+        rootLayout = new FrameLayout(this);
 
         // 请求权限
         requestPermissionsIfNeeded();
@@ -126,6 +135,9 @@ public class MainActivity extends AppCompatActivity {
 
         // 初始化布局
         initLayout();
+
+        // 将 FrameLayout 设置为内容视图
+        setContentView(rootLayout);
     }
 
     private void requestPermissionsIfNeeded() {
@@ -173,7 +185,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void initLayout() {
         // 创建一个垂直的 LinearLayout
-        LinearLayout linearLayout = new LinearLayout(this);
+        linearLayout = new LinearLayout(this);
         linearLayout.setOrientation(LinearLayout.VERTICAL);
         linearLayout.setGravity(Gravity.CENTER_HORIZONTAL);
 
@@ -211,12 +223,8 @@ public class MainActivity extends AppCompatActivity {
         videoSurfaceEncoderButton.setLayoutParams(startParams);
         linearLayout.addView(videoSurfaceEncoderButton);
 
-        // 将 LinearLayout 添加到内容视图
-        FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-        );
-        addContentView(linearLayout, layoutParams);
+        // 将 LinearLayout 添加到 FrameLayout 中，这样按钮会显示在 mRenderView 之上
+        rootLayout.addView(linearLayout);
     }
 
     private Button createButton(String text, View.OnClickListener listener, int gravity) {
@@ -353,6 +361,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onVideoRenderButtonClick(View view) {
+        // 创建 mRenderView
         initVideoRender();
     }
 
@@ -364,7 +373,11 @@ public class MainActivity extends AppCompatActivity {
         Rect outRect = new Rect();
         windowManager.getDefaultDisplay().getRectSize(outRect);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(outRect.width(), outRect.height());
-        addContentView(mRenderView, params);
+        // 将 mRenderView 添加到 FrameLayout 中
+        rootLayout.addView(mRenderView, params);
+        // 将 LinearLayout 添加到 FrameLayout 中，这样按钮会显示在 mRenderView 之上
+        rootLayout.removeView(linearLayout);
+        rootLayout.addView(linearLayout);
 
         mVideoCaptureConfig = new YYVideoCaptureConfig();
         mVideoCaptureConfig.cameraFacing = LENS_FACING_FRONT;
@@ -378,31 +391,26 @@ public class MainActivity extends AppCompatActivity {
         }
         mVideoCapture.setup(this, mVideoCaptureConfig, mVideoCaptureListener, mEGLContext.getContext());
         mVideoCapture.startRunning();
+
+        mEncoderConfig = new YYVideoEncoderConfig();
     }
 
     private void onVideoSurfaceEncoderButtonClick(View view) {
-        if(mDemuxer == null) {
-            initDemuxer();
+        if (mEGLContext == null) {
+            initVideoRender();
         }
 
-        if (mVideoDecoder == null) {
-            mVideoDecoder = new YYByteBufferCodec();
-            mVideoDecoder.setup(false,mDemuxer.videoMediaFormat(),mVideoEncoderListener,null);
+        // 创建编码器
+        if(mVideoEncoder == null){
+            mVideoEncoder = new YYVideoSurfaceEncoder();
+            MediaFormat mediaFormat = YYAVTools.createVideoFormat(mEncoderConfig.isHEVC,mEncoderConfig.size, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,mEncoderConfig.bitrate,mEncoderConfig.fps,mEncoderConfig.gop / mEncoderConfig.fps,mEncoderConfig.profile,mEncoderConfig.profileLevel);
+            mVideoEncoder.setup(true,mediaFormat,mVideoEncoderListener,mEGLContext.getContext());
+            ((Button)view).setText("stop");
+        }else{
+            mVideoEncoder.release();
+            mVideoEncoder = null;
+            ((Button)view).setText("VideoSurfaceEncoder");
         }
-
-        if (mVideoEncoder == null) {
-            mVideoEncoder = new YYByteBufferCodec();
-            mVideoEncoder.setup(true, YYAVTools.createVideoFormat(false,new Size(mDemuxer.width(),mDemuxer.height()), MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,4*1024*1024,30,4,1,1),mVideoEncoderListener,null);
-        }
-
-        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        ByteBuffer nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
-        while (nextBuffer != null){
-            mVideoDecoder.processFrame(new YYBufferFrame(nextBuffer,bufferInfo));
-            nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
-        }
-        mVideoDecoder.flush();
-        Log.i("YYDemuxer","complete");
     }
 
 
@@ -581,7 +589,12 @@ public class MainActivity extends AppCompatActivity {
         @Override
         ///< 相机数据回调
         public void onFrameAvailable(YYFrame frame) {
+            //mRenderView.render((YYTextureFrame) frame);
+            ///< 采集数据回调，进入编码器。
             mRenderView.render((YYTextureFrame) frame);
+            if (mVideoEncoder != null) {
+                mVideoEncoder.processFrame(frame);
+            }
         }
     };
 
@@ -615,7 +628,29 @@ public class MainActivity extends AppCompatActivity {
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
         @Override
         public void decodeDataOnAvailable(YYFrame frame) {
+//            if(frame == null){
+//                return;
+//            }
+//
+//            if(mVideoDecoder != null){
+//                mVideoDecoder.processFrame(frame);
+//            }
+            if(frame == null){
+                return;
+            }
 
+            YYBufferFrame bufferFrame = (YYBufferFrame)frame;
+            if(bufferFrame.buffer == null){
+                return;
+            }
+
+            try {
+                byte[] dst = new byte[(int) (bufferFrame.bufferInfo.size)];
+                bufferFrame.buffer.get(dst);
+                mStream.write(dst);
+            }  catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     };
 }
