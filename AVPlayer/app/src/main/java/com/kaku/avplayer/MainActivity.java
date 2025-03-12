@@ -92,6 +92,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String OUTPUT_SURFACE_ENCODER = "videoEncodec.h264";
     private static final String OUTPUT_SURFACE_MUXER = "videoMuxer.mp4";
     private static final String OUTPUT_SURFACE_DEMUXER = "videoDemuxer.h264";
+    private static final String OUTPUT_SURFACE_COMPILE = "videoCompile.mp4";
 
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
     private YYAudioCaptureConfig mAudioCaptureConfig = null;///< 音频采集配置
@@ -173,9 +174,11 @@ public class MainActivity extends AppCompatActivity {
         Log.e("outputVideoMuxer", "Muxer outputVideoMuxer: " + outputVideoMuxer);
         String outputVideoDemuxer = externalFilesDir + "/" + OUTPUT_SURFACE_DEMUXER;
         Log.e("outputVideoDemuxer", "h264 outputVideoDemuxer: " + outputVideoDemuxer);
+        String outputVideoCompile = externalFilesDir + "/" + OUTPUT_SURFACE_COMPILE;
+        Log.e("outputVideoCompile", "h264 outputVideoCompile: " + outputVideoCompile);
 
 
-        mMuxerConfig = new YYMuxerConfig(outputVideoMuxer);
+        mMuxerConfig = new YYMuxerConfig(outputVideoCompile);
         mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAV;
 
         mDemuxerConfig = new YYDemuxerConfig();
@@ -239,6 +242,11 @@ public class MainActivity extends AppCompatActivity {
         Button videoDemuxerButton = createButton("VideoDemuxer", this::onVideoDemuxerButtonClick, Gravity.CENTER_HORIZONTAL);
         videoDemuxerButton.setLayoutParams(startParams);
         linearLayout.addView(videoDemuxerButton);
+
+        // 创建新按钮
+        Button videoCompileButton = createButton("VideoCompile", this::onVideoCompileButtonClick, Gravity.CENTER_HORIZONTAL);
+        videoCompileButton.setLayoutParams(startParams);
+        linearLayout.addView(videoCompileButton);
 
         // 将 LinearLayout 添加到 FrameLayout 中，这样按钮会显示在 mRenderView 之上
         rootLayout.addView(linearLayout);
@@ -510,6 +518,37 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void onVideoCompileButtonClick(View view) {
+        ///< 创建解封装与封装。
+        if (mDemuxer == null) {
+            mDemuxer = new YYMP4Demuxer(mDemuxerConfig, mDemuxerListener);
+            mMuxer = new YYMP4Muxer(mMuxerConfig, mMuxerListener);
+            mMuxer.start();
+            ///< 设置格式描述。
+            mMuxer.setVideoMediaFormat(mDemuxer.videoMediaFormat());
+            mMuxer.setAudioMediaFormat(mDemuxer.audioMediaFormat());
+
+            ///< 循环读取音视频数据写入封装器。
+            MediaCodec.BufferInfo videoBufferInfo = new MediaCodec.BufferInfo();
+            ByteBuffer videoNextBuffer = mDemuxer.readVideoSampleData(videoBufferInfo);
+
+            MediaCodec.BufferInfo audioBufferInfo = new MediaCodec.BufferInfo();
+            ByteBuffer audioNextBuffer = mDemuxer.readAudioSampleData(audioBufferInfo);
+            while (audioNextBuffer != null || videoNextBuffer != null) {
+                if (audioNextBuffer != null) {
+                    mMuxer.writeSampleData(false, audioNextBuffer, audioBufferInfo);
+                    audioNextBuffer = mDemuxer.readAudioSampleData(audioBufferInfo);
+                }
+
+                if (videoNextBuffer != null) {
+                    mMuxer.writeSampleData(true, videoNextBuffer, videoBufferInfo);
+                    videoNextBuffer = mDemuxer.readVideoSampleData(videoBufferInfo);
+                }
+            }
+            mMuxer.stop();
+            Log.i("YYCompile", "complete");
+        }
+    }
 
 
     @Override
