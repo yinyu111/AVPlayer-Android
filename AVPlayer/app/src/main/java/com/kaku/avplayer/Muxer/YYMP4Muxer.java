@@ -270,6 +270,7 @@ public class YYMP4Muxer {
         while (mVideoList.size() > 0){
             YYBufferFrame packet = mVideoList.get(0);
             mMediaMuxer.writeSampleData(mVideoTrackIndex,packet.buffer,packet.bufferInfo);
+            Log.i("Muxer","writeSampleData");
             mVideoList.remove(0);
         }
     }

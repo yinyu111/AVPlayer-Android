@@ -89,8 +89,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String OUTPUT_CAPTURE = "test.m4a";
     private static final String OUTPUT_DEMUXER = "output.aac";
     private static final String OUTPUT_DECODER = "output.pcm";
+    private static final String OUTPUT_SURFACE_ENCODER = "videoEncodec.h264";
+    private static final String OUTPUT_SURFACE_MUXER = "videoMuxer.mp4";
 
-    private static final String OUTPUT_SURFACE_ENCODER = "output.h264";
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
     private YYAudioCaptureConfig mAudioCaptureConfig = null;///< 音频采集配置
     private YYMediaCodecInterface mAudioEncoder = null;///< 音频编码
@@ -167,9 +168,12 @@ public class MainActivity extends AppCompatActivity {
         Log.e("outputDecoder", "aac outputDecoder: " + outputDecoder);
         String outputVideoEncoder = externalFilesDir + "/" + OUTPUT_SURFACE_ENCODER;
         Log.e("outputVideoEncoder", "h264 outputVideoEncoder: " + outputVideoEncoder);
+        String outputVideoMuxer = externalFilesDir + "/" + OUTPUT_SURFACE_MUXER;
+        Log.e("outputVideoMuxer", "Muxer outputVideoMuxer: " + outputVideoMuxer);
 
-        mMuxerConfig = new YYMuxerConfig(outputCapture);
-        mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAudio;
+
+        mMuxerConfig = new YYMuxerConfig(outputVideoMuxer);
+        mMuxerConfig.muxerType = YYMediaBase.YYMediaType.YYMediaAV;
 
         mDemuxerConfig = new YYDemuxerConfig();
         mDemuxerConfig.path = inputFilePath;
@@ -222,6 +226,11 @@ public class MainActivity extends AppCompatActivity {
         Button videoSurfaceEncoderButton = createButton("VideoSurfaceEncoder", this::onVideoSurfaceEncoderButtonClick, Gravity.CENTER_HORIZONTAL);
         videoSurfaceEncoderButton.setLayoutParams(startParams);
         linearLayout.addView(videoSurfaceEncoderButton);
+
+        // 创建新按钮
+        Button videoSurfaceMuxerButton = createButton("VideoSurfaceMuxer", this::onVideoSurfaceMuxerButtonClick, Gravity.CENTER_HORIZONTAL);
+        videoSurfaceMuxerButton.setLayoutParams(startParams);
+        linearLayout.addView(videoSurfaceMuxerButton);
 
         // 将 LinearLayout 添加到 FrameLayout 中，这样按钮会显示在 mRenderView 之上
         rootLayout.addView(linearLayout);
@@ -411,6 +420,34 @@ public class MainActivity extends AppCompatActivity {
             mVideoEncoder = null;
             ((Button)view).setText("VideoSurfaceEncoder");
         }
+    }
+
+    private void onVideoSurfaceMuxerButtonClick(View view) {
+        if (mEGLContext == null) {
+            initVideoRender();
+        }
+
+        // 创建编码器
+        if(mVideoEncoder == null){
+            mVideoEncoder = new YYVideoSurfaceEncoder();
+            MediaFormat mediaFormat = YYAVTools.createVideoFormat(mEncoderConfig.isHEVC,mEncoderConfig.size, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,mEncoderConfig.bitrate,mEncoderConfig.fps,mEncoderConfig.gop / mEncoderConfig.fps,mEncoderConfig.profile,mEncoderConfig.profileLevel);
+            mVideoEncoder.setup(true,mediaFormat,mVideoEncoderListener,mEGLContext.getContext());
+            if (mMuxer == null) {
+                initMuxer();
+                mMuxer.start();
+            }
+            ((Button)view).setText("stop");
+        }else{
+            mVideoEncoder.release();
+            mVideoEncoder = null;
+            if (mMuxer != null) {
+                mMuxer.stop();
+                mMuxer.release();
+                mMuxer = null;
+            }
+            ((Button)view).setText("VideoSurfaceMuxer");
+        }
+
     }
 
 
@@ -616,12 +653,21 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            try {
-                byte[] dst = new byte[(int) (bufferFrame.bufferInfo.size)];
-                bufferFrame.buffer.get(dst);
-                mStream.write(dst);
-            }  catch (IOException e) {
-                e.printStackTrace();
+//            try {
+//                byte[] dst = new byte[(int) (bufferFrame.bufferInfo.size)];
+//                bufferFrame.buffer.get(dst);
+//                mStream.write(dst);
+//            }  catch (IOException e) {
+//                e.printStackTrace();
+//            }
+            // 编码回调数据进入封装器
+            if(mMuxer != null) {
+                if ((((YYBufferFrame)frame).bufferInfo.flags & BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                    mMuxer.setVideoMediaFormat(mVideoEncoder.getOutputMediaFormat());
+                }else{
+                    mMuxer.writeSampleData(true,((YYBufferFrame)frame).buffer,((YYBufferFrame)frame).bufferInfo);
+                    Log.i("Muxer","encodeDataOnAvailable");
+                }
             }
         }
 
