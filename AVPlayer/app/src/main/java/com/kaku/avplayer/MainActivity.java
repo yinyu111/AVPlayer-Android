@@ -91,6 +91,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String OUTPUT_DECODER = "output.pcm";
     private static final String OUTPUT_SURFACE_ENCODER = "videoEncodec.h264";
     private static final String OUTPUT_SURFACE_MUXER = "videoMuxer.mp4";
+    private static final String OUTPUT_SURFACE_DEMUXER = "videoDemuxer.h264";
 
     private YYAudioCapture mAudioCapture = null;///< 音频采集模块
     private YYAudioCaptureConfig mAudioCaptureConfig = null;///< 音频采集配置
@@ -170,6 +171,8 @@ public class MainActivity extends AppCompatActivity {
         Log.e("outputVideoEncoder", "h264 outputVideoEncoder: " + outputVideoEncoder);
         String outputVideoMuxer = externalFilesDir + "/" + OUTPUT_SURFACE_MUXER;
         Log.e("outputVideoMuxer", "Muxer outputVideoMuxer: " + outputVideoMuxer);
+        String outputVideoDemuxer = externalFilesDir + "/" + OUTPUT_SURFACE_DEMUXER;
+        Log.e("outputVideoDemuxer", "h264 outputVideoDemuxer: " + outputVideoDemuxer);
 
 
         mMuxerConfig = new YYMuxerConfig(outputVideoMuxer);
@@ -180,7 +183,7 @@ public class MainActivity extends AppCompatActivity {
         mDemuxerConfig.demuxerType = YYMediaBase.YYMediaType.YYMediaAV;
         if (mStream == null) {
             try {
-                mStream = new FileOutputStream(outputVideoEncoder);
+                mStream = new FileOutputStream(outputVideoDemuxer);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             }
@@ -231,6 +234,11 @@ public class MainActivity extends AppCompatActivity {
         Button videoSurfaceMuxerButton = createButton("VideoSurfaceMuxer", this::onVideoSurfaceMuxerButtonClick, Gravity.CENTER_HORIZONTAL);
         videoSurfaceMuxerButton.setLayoutParams(startParams);
         linearLayout.addView(videoSurfaceMuxerButton);
+
+        // 创建新按钮
+        Button videoDemuxerButton = createButton("VideoDemuxer", this::onVideoDemuxerButtonClick, Gravity.CENTER_HORIZONTAL);
+        videoDemuxerButton.setLayoutParams(startParams);
+        linearLayout.addView(videoDemuxerButton);
 
         // 将 LinearLayout 添加到 FrameLayout 中，这样按钮会显示在 mRenderView 之上
         rootLayout.addView(linearLayout);
@@ -449,6 +457,59 @@ public class MainActivity extends AppCompatActivity {
         }
 
     }
+
+    private void onVideoDemuxerButtonClick(View view) {
+        // 解封装创建
+        if(mDemuxer == null){
+            mDemuxer = new YYMP4Demuxer(mDemuxerConfig,mDemuxerListener);
+
+            // 根据HEVC 分别获取vps sps pps等信息
+            if(mDemuxer.isHEVC()){
+                try {
+                    ByteBuffer extradata = mDemuxer.videoMediaFormat().getByteBuffer("csd-0");
+                    byte[] extradataBytes = new byte[extradata.capacity()];
+                    extradata.get(extradataBytes);
+                    mStream.write(extradataBytes);
+                }  catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }else{
+                try {
+                    ByteBuffer sps = mDemuxer.videoMediaFormat().getByteBuffer("csd-0");
+                    byte[] spsBytes = new byte[sps.capacity()];
+                    sps.get(spsBytes);
+                    mStream.write(spsBytes);
+                }  catch (IOException e) {
+                    e.printStackTrace();
+                }
+
+                try {
+                    ByteBuffer pps = mDemuxer.videoMediaFormat().getByteBuffer("csd-1");
+                    byte[] ppsBytes = new byte[pps.capacity()];
+                    pps.get(ppsBytes);
+                    mStream.write(ppsBytes);
+                }  catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // 循环读取视频数据
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            ByteBuffer nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
+            while (nextBuffer != null){
+                try {
+                    byte[] dst = new byte[bufferInfo.size];
+                    nextBuffer.get(dst);
+                    mStream.write(dst);
+                }  catch (IOException e) {
+                    e.printStackTrace();
+                }
+                nextBuffer = mDemuxer.readVideoSampleData(bufferInfo);
+            }
+            Log.i("YYDemuxer","complete");
+        }
+    }
+
 
 
     @Override
