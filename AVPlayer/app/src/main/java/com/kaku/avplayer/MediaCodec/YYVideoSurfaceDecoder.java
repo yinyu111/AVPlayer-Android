@@ -334,7 +334,13 @@ public class YYVideoSurfaceDecoder implements YYMediaCodecInterface {
                 if(mListener != null){
                     int width = mInputMediaFormat.getInteger(MediaFormat.KEY_WIDTH);
                     int height = mInputMediaFormat.getInteger(MediaFormat.KEY_HEIGHT);
-                    int rotation = (mInputMediaFormat.getInteger(MediaFormat.KEY_ROTATION) + 360) % 360;
+                    int rotation = 0;
+                    try {
+                        rotation = (mInputMediaFormat.getInteger(MediaFormat.KEY_ROTATION) + 360) % 360;
+                    } catch (NullPointerException e) {
+                        // 记录异常信息，方便调试
+                        e.printStackTrace();
+                    }
                     int rotationWidth = (rotation % 360 == 90 || rotation % 360 == 270) ? height : width;
                     int rotationHeight = (rotation % 360 == 90 || rotation % 360 == 270) ? width : height;
                     YYTextureFrame frame = new YYTextureFrame(mSurfaceTexture.getSurfaceTextureId(),new Size(rotationWidth,rotationHeight),mSurfaceTexture.getSurfaceTexture().getTimestamp() * 1000,true);
